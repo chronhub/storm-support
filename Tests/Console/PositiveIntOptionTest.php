@@ -62,6 +62,7 @@ final class PositiveIntOptionTest extends TestCase
             // A console option like --batch=007 means 7, not malformed input: leading zeros collapse
             // to the value here, unlike the domain SequencePosition which treats them as invalid.
             'leading zeros collapse to the value' => ['007', 7],
+            'padding wider than the largest integer' => [str_repeat('0', strlen((string) PHP_INT_MAX) + 1).'7', 7],
         ];
     }
 

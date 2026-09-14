@@ -12,6 +12,30 @@ use Storm\Support\Error\AuditDigest;
 
 final class AuditDigestTest extends TestCase
 {
+    public function test_truncation_is_independent_of_internal_encoding(): void
+    {
+        $encoding = mb_internal_encoding();
+        try {
+            mb_internal_encoding('ISO-8859-1');
+            $digest = AuditDigest::digest(new RuntimeException(str_repeat('é', 8000)));
+            self::assertTrue(mb_check_encoding($digest, 'UTF-8'));
+            self::assertSame(AuditDigest::MAX_ERROR_CHARS, mb_strlen($digest, 'UTF-8'));
+            self::assertStringEndsWith('…', $digest);
+            $short = 'RuntimeException: '.str_repeat('é', 4000);
+            self::assertSame($short, AuditDigest::digest(new RuntimeException(str_repeat('é', 4000))));
+        } finally {
+            mb_internal_encoding($encoding);
+        }
+    }
+
+    #[Test]
+    public function a_multibyte_digest_at_the_exact_character_limit_is_preserved(): void
+    {
+        $prefix = 'RuntimeException: ';
+        $message = str_repeat('é', AuditDigest::MAX_ERROR_CHARS - mb_strlen($prefix));
+        self::assertSame($prefix.$message, AuditDigest::digest(new RuntimeException($message)));
+    }
+
     #[Test]
     public function digests_a_simple_throwable(): void
     {
@@ -64,6 +88,8 @@ final class AuditDigestTest extends TestCase
 
         self::assertStringNotContainsString("\0", $digest);
         self::assertStringEndsWith(': boom', $digest);
+        self::assertStringStartsWith('RuntimeException@anonymous', $digest);
+        self::assertStringNotContainsString(__FILE__, $digest);
     }
 
     #[Test]
@@ -85,6 +111,7 @@ final class AuditDigestTest extends TestCase
         $digest = AuditDigest::digest(new RuntimeException($longMessage));
 
         self::assertSame(AuditDigest::MAX_ERROR_CHARS, mb_strlen($digest));
+        self::assertStringStartsWith('RuntimeException: ', $digest);
         self::assertStringEndsWith('…', $digest);
     }
 

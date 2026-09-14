@@ -52,6 +52,13 @@ Group by concern in sub-namespaces (`Support\Dbal\…`).
 - `Error\AuditDigest` — Throwable → compact persist-safe audit string for `last_error` columns
   (cause chain walked, scrubbed to valid UTF-8, controls neutralised, NUL-stripped, char-capped),
   shared by both outbox relays, the saga TimerRunner and the bundle's SagaCommandFailureListener.
+- `Error\TransientFailure` — the MECHANISM of rule 3 again, on the sibling question: does this
+  Throwable's cause chain name the infrastructure (a Messenger transport failure or its recoverable
+  marker, any Doctrine DBAL failure) rather than the message itself? Shared by both outbox relays,
+  which ask it before their own dead-letter gate so a broker outage is never converted into an
+  operator's replay. It answers; the *decision* of what to do with the answer, and at which gate,
+  stays with each relay. Messenger is an optional companion here, matched by name so the substrate
+  keeps no transport of its own.
 - `OutboxDisposal` — the shared policy VOCABULARY (rule 3's deliberate extension): what becomes of
   an outbox row at terminal success, `delete` or `archive`, shared by the event and saga outboxes.
   Disposal concerns SUCCESSFUL rows only; failed rows stay hot for forensics, and their later

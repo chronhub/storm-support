@@ -13,6 +13,9 @@
         "phpstan/phpstan": "^2.2.8",
         "phpunit/phpunit": "^13.3.0"
     },
+    "suggest": {
+        "symfony/messenger": "Lets Error\\TransientFailure recognise a broker outage by Messenger's transport and recoverable markers; matched by name, so an absent component simply matches nothing."
+    },
     "autoload": {
         "psr-4": {
             "Storm\\Support\\": "./"

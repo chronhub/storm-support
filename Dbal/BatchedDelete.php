@@ -27,11 +27,12 @@ use InvalidArgumentException;
  * be a bound `$bindings` parameter, never interpolated; the table is additionally gated to a plain
  * identifier at runtime, so the trust is checkable rather than assumed.
  *
- * NEVER against a partitioned parent, and the guard makes the rule unreachable to break: `ctid` is
- * a physical address WITHIN one relation, partitions collide freely on it, and the outer `DELETE`,
- * whose only predicate is the ctid set, would remove homonymous rows from SIBLING partitions,
- * silent data loss rather than an error. A partitioned table prunes per partition, or with a
- * predicate-scoped `DELETE`.
+ * Partitioned parents and inheritance parents are refused according to the relation resolved by
+ * the connection's search path. This initial catalog check is a snapshot, not a topology lock.
+ * Each batch uses `ONLY` for both selection and deletion, so a child added after that check
+ * cannot lose rows through a colliding `ctid`. The helper does not stabilize table names or
+ * topology for the duration of the purge. Prune children separately or use a predicate-scoped
+ * `DELETE` when descendant traversal is required.
  *
  * Stateless on purpose: the caller already holds the connection with its own transactional context, so
  * this stays a pure function rather than a wired service.
@@ -49,7 +50,7 @@ final class BatchedDelete
      *                      report a clean prune with every eligible row still there
      *
      * @throws InvalidArgumentException when `$batch` is not strictly positive, `$table` is not a
-     *                                  plain identifier, or `$table` names a partitioned parent;
+     *                                  plain identifier, or `$table` names a partitioned or inheritance parent;
      *                                  caller bugs, each refused before any row is touched
      * @throws Exception on a DBAL delete failure
      */
@@ -63,17 +64,16 @@ final class BatchedDelete
             throw new InvalidArgumentException(sprintf("The delete table must be a plain identifier, got '%s'.", addcslashes($table, "\0..\37\177")));
         }
 
-        // one catalog read per prune, and the ctid trap becomes unreachable instead of documented
-        $relkind = $connection->fetchOne(
-            /** @lang PostgreSQL */
-            'SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-             WHERE n.nspname = current_schema() AND c.relname = :table',
+        $parent = $connection->fetchOne(
+            "SELECT 1 FROM pg_class c
+             WHERE c.oid = to_regclass(:table)
+             AND (c.relkind = 'p' OR EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c.oid))",
             ['table' => $table],
         );
 
-        if ($relkind === 'p') {
+        if ($parent !== false) {
             throw new InvalidArgumentException(sprintf(
-                'BatchedDelete refuses the partitioned parent %s: ctid is per-partition, so the outer DELETE would remove unrelated rows from sibling partitions. Prune each partition, or use a predicate-scoped DELETE.',
+                'BatchedDelete refuses the partitioned parent or inheritance parent %s. Prune each child, or use a predicate-scoped DELETE.',
                 $table,
             ));
         }
@@ -82,7 +82,7 @@ final class BatchedDelete
 
         do {
             $deleted = (int) $connection->executeStatement(
-                sprintf('DELETE FROM %1$s WHERE ctid IN (SELECT ctid FROM %1$s WHERE %2$s LIMIT %3$d FOR UPDATE SKIP LOCKED)', $table, $predicate, $batch),
+                sprintf('DELETE FROM ONLY %1$s WHERE ctid IN (SELECT ctid FROM ONLY %1$s WHERE %2$s LIMIT %3$d FOR UPDATE SKIP LOCKED)', $table, $predicate, $batch),
                 $bindings,
             );
             $total += $deleted;

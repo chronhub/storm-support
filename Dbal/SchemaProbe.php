@@ -265,22 +265,23 @@ final readonly class SchemaProbe
         if ($indexes !== []) {
             $names = array_merge(...array_map(array_keys(...), array_values($indexes)));
             $defs = [];
-            // by NAME alone here, and that is sound where the constraint block above is not: index
-            // names ARE schema-unique in PostgreSQL, a homonym on another table cannot exist.
+            // Schema-unique names identify indexes, but their owning table must also match.
             // pg_index rather than the pg_indexes view: the view renders a definition and nothing
             // else, so an index left INVALID by an interrupted concurrent build reads as complete
             foreach ($connection->fetchAllAssociative(
                 /** @lang PostgreSQL */
-                'SELECT c.relname AS indexname, pg_get_indexdef(i.indexrelid) AS indexdef,
+                'SELECT c.relname AS indexname, t.relname AS tablename, pg_get_indexdef(i.indexrelid) AS indexdef,
                         (i.indisvalid AND i.indisready AND i.indislive) AS usable
                  FROM pg_index i
                  JOIN pg_class c ON c.oid = i.indexrelid
+                 JOIN pg_class t ON t.oid = i.indrelid
                  JOIN pg_namespace n ON n.oid = c.relnamespace
                  WHERE n.nspname = current_schema() AND c.relname IN (:names)',
                 ['names' => $names],
                 ['names' => ArrayParameterType::STRING],
             ) as $row) {
                 $defs[(string) $row['indexname']] = [
+                    'table' => (string) $row['tablename'],
                     'definition' => (string) $row['indexdef'],
                     'usable' => (bool) $row['usable'],
                 ];
@@ -289,6 +290,8 @@ final readonly class SchemaProbe
                 foreach ($expected as $name => $needle) {
                     if (! isset($defs[$name])) {
                         $problems[] = sprintf('index %s on %s: absent', $name, $table);
+                    } elseif ($defs[$name]['table'] !== $table) {
+                        $problems[] = sprintf('index %s on %s: belongs to %s', $name, $table, $defs[$name]['table']);
                     } elseif (! $defs[$name]['usable']) {
                         // an interrupted CREATE INDEX CONCURRENTLY leaves the definition intact and the
                         // index unusable: the planner ignores it and a unique one enforces nothing,

@@ -60,8 +60,8 @@ final readonly class AuditDigest
         $summary = mb_scrub($summary, 'UTF-8');
         $summary = preg_replace('/[\x00-\x09\x0B-\x1F\x7F]/', '?', $summary) ?? $summary;
 
-        return mb_strlen($summary) > self::MAX_ERROR_CHARS
-            ? mb_substr($summary, 0, self::MAX_ERROR_CHARS - 1).'…'
+        return mb_strlen($summary, 'UTF-8') > self::MAX_ERROR_CHARS
+            ? mb_substr($summary, 0, self::MAX_ERROR_CHARS - 1, 'UTF-8').'…'
             : $summary;
     }
 }
