@@ -79,7 +79,7 @@ final class InstallLock
         // database nobody expected is the confusing case, and the message is the only place an
         // operator learns which one it was
         $home = (string) $connection->fetchOne(
-            /** @lang PostgreSQL */
+            /* language=PostgreSQL */
             "SELECT current_database() || '/' || current_schema()",
         );
 

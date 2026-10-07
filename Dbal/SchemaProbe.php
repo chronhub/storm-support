@@ -39,6 +39,42 @@ final readonly class SchemaProbe
      */
     public function problems(Connection $connection, SchemaCatalog $catalog, array $tables): array
     {
+        // every renderer read below, `format_type`, `pg_get_expr`, `pg_get_constraintdef` and
+        // `pg_get_indexdef`, names an object bare when the session's search path finds it first and
+        // qualifies it otherwise, so one column reads two ways under two paths. The probe binds the
+        // schema it inspects, then renders under `pg_catalog` alone: a built-in reads bare, anything
+        // else carries its schema, whatever path the caller set
+        $schema = $connection->fetchOne('SELECT current_schema()');
+        $path = (string) $connection->fetchOne("SELECT current_setting('search_path')");
+        $connection->fetchOne("SELECT set_config('search_path', 'pg_catalog', false)");
+        $inspected = false;
+
+        try {
+            $problems = $this->inspect($connection, $catalog, $tables, is_string($schema) ? $schema : null);
+            $inspected = true;
+
+            return $problems;
+        } finally {
+            try {
+                $connection->fetchOne("SELECT set_config('search_path', :path, false)", ['path' => $path]);
+            } catch (Exception $e) {
+                // a failed read inside a transaction aborts it, and its rollback reverts the path;
+                // only a restore that fails after a clean inspection is the caller's to see
+                if ($inspected) {
+                    throw $e;
+                }
+            }
+        }
+    }
+
+    /**
+     * @param  list<string>  $tables
+     * @return list<string>
+     *
+     * @throws Exception on a DBAL failure interrogating the catalogs
+     */
+    private function inspect(Connection $connection, SchemaCatalog $catalog, array $tables, ?string $schema): array
+    {
         $problems = [];
 
         // pg_catalog, not information_schema: format_type keeps the precision of timestamptz(6) and
@@ -46,19 +82,23 @@ final readonly class SchemaProbe
         // reports USER-DEFINED. pg_attrdef, LEFT joined, since most columns carry no default at all;
         // pg_get_expr needs the owning relation's oid to resolve the column references inside it.
         $rows = $connection->fetchAllAssociative(
-            /** @lang PostgreSQL */
+            /* language=PostgreSQL */
             "SELECT c.relname AS table_name, a.attname AS column_name,
                     format_type(a.atttypid, a.atttypmod) AS column_type, a.attnotnull::int AS not_null,
-                    coll.collname AS collation_name, a.attidentity AS identity,
+                    CASE WHEN coll.oid IS NULL OR (cn.nspname = 'pg_catalog' AND coll.collname = 'default') THEN NULL
+                         WHEN cn.nspname = 'pg_catalog' THEN coll.collname
+                         ELSE quote_ident(cn.nspname) || '.' || quote_ident(coll.collname) END AS collation_name,
+                    a.attidentity AS identity,
                     pg_get_expr(ad.adbin, ad.adrelid) AS default_expr
              FROM pg_attribute a
              JOIN pg_class c ON c.oid = a.attrelid
              JOIN pg_namespace n ON n.oid = c.relnamespace
-             LEFT JOIN pg_collation coll ON coll.oid = a.attcollation AND coll.collname <> 'default'
+             LEFT JOIN pg_collation coll ON coll.oid = a.attcollation
+             LEFT JOIN pg_namespace cn ON cn.oid = coll.collnamespace
              LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
-             WHERE n.nspname = current_schema() AND c.relname IN (:tables)
+             WHERE n.nspname = :schema AND c.relname IN (:tables)
                AND c.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped",
-            ['tables' => $tables],
+            ['schema' => $schema, 'tables' => $tables],
             ['tables' => ArrayParameterType::STRING],
         );
         $live = [];
@@ -68,7 +108,9 @@ final readonly class SchemaProbe
             // the collation joins the shape only when it is NOT the database default, so every column
             // that leaves the question to the deployment reads exactly as before. A column that PINS
             // one does so because an ordering it relies on would otherwise follow the host's libc,
-            // which is a behavior difference no type comparison can see.
+            // which is a behavior difference no type comparison can see. A collation outside
+            // `pg_catalog` carries its schema, both names quoted as PostgreSQL quotes them, so neither
+            // a homonym of `C` nor one of `default` reads as the real one.
             $collation = $row['collation_name'] === null ? '' : ' collate '.(string) $row['collation_name'];
 
             $table = (string) $row['table_name'];
@@ -103,7 +145,7 @@ final readonly class SchemaProbe
                 if ($needle === null || ! isset($live[$table][$column])) {
                     continue;
                 }
-                if (! str_contains($live[$table][$column], $needle)) {
+                if (! ColumnShape::holds($live[$table][$column], $needle)) {
                     $problems[] = sprintf(
                         "column %s on %s: shape '%s' lost '%s' — a pre-existing column with this name is incompatible; the installer creates, it does not migrate",
                         $column,
@@ -152,9 +194,9 @@ final readonly class SchemaProbe
                 $actual = $liveDefault[$table][$column] ?? null;
                 if ($actual === null) {
                     $problems[] = sprintf('column %s on %s: no DEFAULT — expected one', $column, $table);
-                } elseif ($needle !== null && ! str_contains($actual, $needle)) {
+                } elseif ($needle !== null && $actual !== $needle) {
                     $problems[] = sprintf(
-                        "column %s on %s: DEFAULT '%s' lost '%s' — a pre-existing column with this name is incompatible; the installer creates, it does not migrate",
+                        "column %s on %s: DEFAULT is '%s', not '%s' — a pre-existing column with this name is incompatible; the installer creates, it does not migrate",
                         $column,
                         $table,
                         $actual,
@@ -166,11 +208,11 @@ final readonly class SchemaProbe
 
         foreach (array_intersect($catalog->partitioned, $tables) as $table) {
             $relkind = $connection->fetchOne(
-                /** @lang PostgreSQL */
+                /* language=PostgreSQL */
                 'SELECT c.relkind FROM pg_class c
                  JOIN pg_namespace n ON n.oid = c.relnamespace
-                 WHERE n.nspname = current_schema() AND c.relname = :table',
-                ['table' => $table],
+                 WHERE n.nspname = :schema AND c.relname = :table',
+                ['schema' => $schema, 'table' => $table],
             );
             if ($relkind !== false && $relkind !== 'p') {
                 $problems[] = sprintf("table %s: not partitioned (relkind '%s') — the runtime expects a LIST-partitioned parent", $table, (string) $relkind);
@@ -183,14 +225,15 @@ final readonly class SchemaProbe
         // category has nowhere to land
         foreach (array_intersect_key($catalog->defaultPartitions, array_flip($tables)) as $parent => $child) {
             $bound = $connection->fetchOne(
-                /** @lang PostgreSQL */
+                /* language=PostgreSQL */
                 'SELECT pg_get_expr(c.relpartbound, c.oid)
                  FROM pg_class c
                  JOIN pg_namespace n ON n.oid = c.relnamespace
                  JOIN pg_inherits i ON i.inhrelid = c.oid
                  JOIN pg_class p ON p.oid = i.inhparent
-                 WHERE n.nspname = current_schema() AND c.relname = :child AND p.relname = :parent',
-                ['child' => $child, 'parent' => $parent],
+                 JOIN pg_namespace pn ON pn.oid = p.relnamespace
+                 WHERE n.nspname = :schema AND c.relname = :child AND pn.nspname = :schema AND p.relname = :parent',
+                ['schema' => $schema, 'child' => $child, 'parent' => $parent],
             );
 
             if ($bound === false) {
@@ -199,7 +242,7 @@ final readonly class SchemaProbe
                     $child,
                     $parent,
                 );
-            } elseif (! str_contains((string) $bound, 'DEFAULT')) {
+            } elseif ((string) $bound !== 'DEFAULT') {
                 $problems[] = sprintf(
                     "partition %s on %s: bound is '%s', not DEFAULT — the catch-all of the category routing is a bounded partition instead",
                     $child,
@@ -222,13 +265,13 @@ final readonly class SchemaProbe
             // per-table key also drops the partition children's copies naturally, the declared
             // parent carrying its own row.
             foreach ($connection->fetchAllAssociative(
-                /** @lang PostgreSQL */
+                /* language=PostgreSQL */
                 'SELECT c.relname, con.conname, con.convalidated, pg_get_constraintdef(con.oid) AS definition
                  FROM pg_constraint con
                  JOIN pg_class c ON c.oid = con.conrelid
                  JOIN pg_namespace n ON n.oid = c.relnamespace
-                 WHERE n.nspname = current_schema() AND con.conname IN (:names)',
-                ['names' => $names],
+                 WHERE n.nspname = :schema AND con.conname IN (:names)',
+                ['schema' => $schema, 'names' => $names],
                 ['names' => ArrayParameterType::STRING],
             ) as $row) {
                 $defs[(string) $row['relname']][(string) $row['conname']] = [
@@ -241,7 +284,7 @@ final readonly class SchemaProbe
                     if (! isset($defs[$table][$name])) {
                         $problems[] = sprintf('constraint %s on %s: absent', $name, $table);
                     } elseif (! $defs[$table][$name]['validated']) {
-                        // NOT VALID carries the full definition, so the fragment below matches and the
+                        // NOT VALID carries the full definition, so the needle below matches and the
                         // predicate still guards every future write; what it does NOT do is answer for
                         // the rows already there, which is exactly what a conformance verdict claims
                         $problems[] = sprintf(
@@ -249,13 +292,11 @@ final readonly class SchemaProbe
                             $name,
                             $table,
                         );
-                    } elseif ($needle !== null && ! str_contains($defs[$table][$name]['definition'], $needle)) {
-                        $problems[] = sprintf(
-                            "constraint %s on %s: definition lost '%s' — a pre-existing constraint with this name is incompatible; the installer creates, it does not migrate",
-                            $name,
-                            $table,
-                            $needle,
-                        );
+                    } elseif ($needle !== null) {
+                        $divergence = ConstraintShape::divergence($table, $name, $defs[$table][$name]['definition'], $needle);
+                        if ($divergence !== null) {
+                            $problems[] = $divergence;
+                        }
                     }
                 }
             }
@@ -269,15 +310,15 @@ final readonly class SchemaProbe
             // pg_index rather than the pg_indexes view: the view renders a definition and nothing
             // else, so an index left INVALID by an interrupted concurrent build reads as complete
             foreach ($connection->fetchAllAssociative(
-                /** @lang PostgreSQL */
+                /* language=PostgreSQL */
                 'SELECT c.relname AS indexname, t.relname AS tablename, pg_get_indexdef(i.indexrelid) AS indexdef,
                         (i.indisvalid AND i.indisready AND i.indislive) AS usable
                  FROM pg_index i
                  JOIN pg_class c ON c.oid = i.indexrelid
                  JOIN pg_class t ON t.oid = i.indrelid
                  JOIN pg_namespace n ON n.oid = c.relnamespace
-                 WHERE n.nspname = current_schema() AND c.relname IN (:names)',
-                ['names' => $names],
+                 WHERE n.nspname = :schema AND c.relname IN (:names)',
+                ['schema' => $schema, 'names' => $names],
                 ['names' => ArrayParameterType::STRING],
             ) as $row) {
                 $defs[(string) $row['indexname']] = [

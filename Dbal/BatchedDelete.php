@@ -7,6 +7,7 @@ namespace Storm\Support\Dbal;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception;
 use InvalidArgumentException;
+use Storm\Support\Text\Str;
 
 /**
  * The batched-delete primitive shared by the framework's retention prunes: Chronicler inbox/outbox,
@@ -61,7 +62,7 @@ final class BatchedDelete
         }
 
         if (preg_match('/^[a-z_][a-z0-9_]*\z/', $table) !== 1) {
-            throw new InvalidArgumentException(sprintf("The delete table must be a plain identifier, got '%s'.", addcslashes($table, "\0..\37\177")));
+            throw new InvalidArgumentException(sprintf("The delete table must be a plain identifier, got '%s'.", Str::printable($table)));
         }
 
         $parent = $connection->fetchOne(

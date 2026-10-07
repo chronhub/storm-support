@@ -23,22 +23,28 @@ final readonly class SchemaCatalog
 {
     /**
      * @param  array<string, array<string, string|null>>  $columns  per table, column name => a fragment
-     *                                                              the live column shape must contain, or
+     *                                                              the live column shape must start with,
+     *                                                              ending on a word, or
      *                                                              null to check presence only. The probe
      *                                                              composes the live shape from
      *                                                              `format_type` plus ` not null` or
      *                                                              ` null`, so `bigint not null` pins type
      *                                                              and nullability while a bare `bigint`
-     *                                                              pins the type alone. The table keys are
-     *                                                              also the set of VERIFIABLE tables, so a
-     *                                                              table absent here is reported rather
-     *                                                              than passed
+     *                                                              pins the type alone. A fragment naming
+     *                                                              a collation is the whole shape and must
+     *                                                              equal it, by the rule of `ColumnShape`.
+     *                                                              The table keys are also the set of
+     *                                                              VERIFIABLE tables, so a table absent
+     *                                                              here is reported rather than passed
      * @param  array<string, array<string, string|null>>  $constraints  per table, constraint name => a
-     *                                                                  fragment the live `pg_get_constraintdef`
-     *                                                                  must contain, or null to check presence
-     *                                                                  only. Same shape as `$indexes`, for the
-     *                                                                  same reason: a name proves nothing about
-     *                                                                  a pre-existing homonym, and a CHECK that
+     *                                                                  needle for the live
+     *                                                                  `pg_get_constraintdef`, or null to check
+     *                                                                  presence only. A complete definition,
+     *                                                                  opening on its keyword, must equal it;
+     *                                                                  any other needle is a fragment it must
+     *                                                                  contain, by the rule of `ConstraintShape`.
+     *                                                                  A name proves nothing about a
+     *                                                                  pre-existing homonym, and a CHECK that
      *                                                                  silently lost a value it must admit
      *                                                                  bites at runtime, not at install
      * @param  array<string, array<string, string|null>>  $indexes  per table, index name => a fragment the
@@ -64,10 +70,13 @@ final readonly class SchemaCatalog
      *                                                            type/nullability shape check unchanged, so
      *                                                            an insert that relies on the generator
      *                                                            fails at the first row, never at install
-     * @param  array<string, array<string, string|null>>  $defaults  per table, column name => a fragment
-     *                                                               the live `DEFAULT` expression must
-     *                                                               contain, or null to check presence only.
-     *                                                               Same fragment shape as `$columns`: a
+     * @param  array<string, array<string, string|null>>  $defaults  per table, column name => the expression
+     *                                                               the live `DEFAULT` must equal, as
+     *                                                               `pg_get_expr` renders it, or null to
+     *                                                               check presence only. Equality, since a
+     *                                                               homonym function of another schema
+     *                                                               renders with that schema around the
+     *                                                               declared call: a
      *                                                               pre-existing column can carry the right
      *                                                               type while its default silently names
      *                                                               the wrong function, or none at all

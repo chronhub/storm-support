@@ -6,10 +6,11 @@ concrete shared layer — small, stateless utilities that several packages need 
 live in `Contracts`, either because they touch an infra vendor (e.g. Doctrine DBAL) or because
 they carry executable logic where `Contracts` holds interfaces only.
 
-It sits at the bottom of the dependency DAG: it depends on **no feature module**, so every module
-above may depend on it without a cycle. In deptrac it is `Support: ~` (no Storm-layer dependency);
-consumers add `Support` to their own allowlist, case by case — the rules then show exactly who uses
-it, rather than implying a blanket dependency.
+It sits at the bottom of the dependency DAG: it depends on **no feature module**, only on the
+`Contracts` ports it implements, which depend on nothing, so every module above may depend on it
+without a cycle. In deptrac it is `Support: [Contracts]`; consumers add `Support` to their own
+allowlist, case by case — the rules then show exactly who uses it, rather than implying a blanket
+dependency.
 
 ## Placement rule (to keep this from becoming a junk drawer)
 
@@ -59,6 +60,15 @@ Group by concern in sub-namespaces (`Support\Dbal\…`).
   operator's replay. It answers; the *decision* of what to do with the answer, and at which gate,
   stays with each relay. Messenger is an optional companion here, matched by name so the substrate
   keeps no transport of its own.
+- `Text\Str` — the string rules several packages must apply identically, written once so their
+  copies cannot drift: `isBlank()`, a blank test that spans Unicode separators, and `printable()`,
+  the log-safe echo of a refused value. A method enters only when two or more packages consume it,
+  under a named policy, with its test; a one-package helper stays where it is used. An operation
+  that takes parameters returns a `Closure(string): string`, so the call itself is the pipe stage.
+- `Random\NativeJitter` — the production draw behind the `Contracts` `Jitter` port: a uniform
+  `random_int` between the bounds a backoff asks for. The saga activity runner and both outbox
+  relays take the port, defaulting to this draw, so a test reads the range they ask for and answers
+  either end of it instead of sampling.
 - `OutboxDisposal` — the shared policy VOCABULARY (rule 3's deliberate extension): what becomes of
   an outbox row at terminal success, `delete` or `archive`, shared by the event and saga outboxes.
   Disposal concerns SUCCESSFUL rows only; failed rows stay hot for forensics, and their later
