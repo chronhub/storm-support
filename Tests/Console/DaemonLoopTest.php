@@ -17,14 +17,14 @@ use function hrtime;
 use function sprintf;
 
 /**
- * The daemon loop the claim-loop commands `saga:relay`, `outbox:relay` and `saga:timers` share via the
- * trait: it loops a tick until a signal or the time-limit, polling when a pass drained nothing and
- * looping hot when it did. The loop's time-based EXIT is not asserted here because it is
- * non-deterministic and slow, the same reason `ConsumeBatchedCommandTest` bounds its loop by signal,
- * not by the clock; the signal is the deterministic handle.
+ * The daemon loop the claim-loop commands `saga:relay`, `outbox:relay` and `saga:timers` share.
  *
- * The idle poll's slicing is another matter and is asserted, since a deadline crossing one slice in
- * proves the re-check without paying a poll interval.
+ * It loops a tick until a signal or the time limit, polling when a pass drained nothing and looping
+ * again at once when it did. The time-based exit is not asserted, being non-deterministic and slow;
+ * as in `ConsumeBatchedCommandTest`, a signal bounds the loop, since it is the deterministic handle.
+ *
+ * The slicing of the idle poll is asserted, since a deadline crossing one slice in proves the
+ * re-check without paying a poll interval.
  */
 final class DaemonLoopTest extends TestCase
 {
@@ -37,7 +37,7 @@ final class DaemonLoopTest extends TestCase
         $host->runDaemonLoop(function () use (&$calls, $host): int {
             $calls++;
             if ($calls === 3) {
-                // a signal lands during the 3rd pass; INSIDE the loop it defers, false by contract
+                // a signal lands during the 3rd pass; inside the loop it defers, false by contract
                 self::assertFalse($host->handleSignal($this->term()));
             }
 
@@ -68,8 +68,8 @@ final class DaemonLoopTest extends TestCase
     {
         $host = $this->host();
 
-        // one-shot mode: no loop will ever read the flag, so deferring would absorb the signal
-        // entirely, Ctrl-C dead; the uninstrumented default returns, the conventional 128 + signal
+        // one-shot mode: no loop reads the flag, so deferring would absorb the signal and leave Ctrl-C
+        // without effect; the handler returns the conventional 128 + signal, like an uninstrumented one
         self::assertSame(128 + $this->term(), $host->handleSignal($this->term()));
 
         if (defined('SIGTERM')) {
@@ -84,8 +84,8 @@ final class DaemonLoopTest extends TestCase
     #[Test]
     public function a_malformed_sleep_refuses_loud_instead_of_a_silent_fallback(): void
     {
-        // A silent fallback would replace `--sleep=abc` with 500 without a word, so a broken deployment
-        // config looks valid. A malformed option is a refusal, never a guess.
+        // a silent fallback would replace `--sleep=abc` with 500 and make a broken deployment config
+        // look valid; a malformed option is refused, never guessed
         $host = $this->host();
 
         self::assertSame(250, $host->readSleepMs(['--sleep' => '250'])); // a real value passes through
@@ -104,11 +104,12 @@ final class DaemonLoopTest extends TestCase
     #[Group('adversarial')]
     public function only_an_explicit_zero_means_unlimited_everything_else_malformed_refuses(): void
     {
-        // Casting `abc` or `-5` to 0 means UNLIMITED, so a typo silently disables the recycle
-        // barrier, the exact accumulation failure mode the finite default exists to prevent
+        // casting `abc` or `-5` to 0 would mean unlimited, so a typo would silently disable recycling,
+        // the accumulation failure mode the finite default exists to prevent
         $host = $this->host();
 
-        self::assertSame(0, $host->readTimeLimit(['--time-limit' => '0']));     // unlimited: explicit, the only spelling
+        // unlimited: explicit, the only spelling
+        self::assertSame(0, $host->readTimeLimit(['--time-limit' => '0']));
         self::assertSame(120, $host->readTimeLimit(['--time-limit' => '120'])); // a real limit passes through
 
         foreach (['-5', 'abc', '00', str_repeat('9', 40)] as $bad) {
@@ -125,10 +126,8 @@ final class DaemonLoopTest extends TestCase
     #[Group('slow')]
     public function the_idle_poll_re_checks_between_slices_instead_of_sleeping_its_whole_interval(): void
     {
-        // the recycle deadline can fall in the middle of a long idle poll, and a daemon that slept
-        // the interval out would overshoot its budget by up to `--sleep`; the supervisor's grace
-        // period is what pays for that overshoot. The nominal poll below is 5 s, and neither call
-        // may take anything like it
+        // a deadline can fall mid-poll, and sleeping the interval out would overshoot the budget by up to
+        // `--sleep`, paid from the supervisor's grace period; neither call may approach the nominal 5 s
         $host = $this->host();
         $nominalMs = 5_000;
 
@@ -143,9 +142,8 @@ final class DaemonLoopTest extends TestCase
     #[Test]
     public function a_host_that_never_declared_the_daemon_options_is_handed_the_remedy(): void
     {
-        // the trait is public API for app commands, and this wiring mistake is otherwise reported by
-        // Symfony as "the --sleep option does not exist", which names the symptom; the remedy is
-        // that the host never called configureDaemon() from its own configure()
+        // the trait is public API for app commands; Symfony would report this wiring mistake as "the
+        // --sleep option does not exist", the symptom, where the remedy is configureDaemon() in configure()
         $host = new UnconfiguredDaemonHost;
 
         foreach (['sleep' => $host->readSleepMs(...), 'time-limit' => $host->readTimeLimit(...)] as $option => $read) {
@@ -157,6 +155,26 @@ final class DaemonLoopTest extends TestCase
                 self::assertInstanceOf(UndeclaredOptionException::class, $e->getPrevious(), 'the raw cause stays reachable for whoever wants it');
             }
         }
+    }
+
+    #[Test]
+    public function both_undeclared_daemon_options_are_refused_with_the_same_message(): void
+    {
+        // one wiring mistake, one remedy: whichever option the host reads first, the refusal reads alike
+        $host = new UnconfiguredDaemonHost;
+        $messages = [];
+
+        foreach (['sleep' => $host->readSleepMs(...), 'time-limit' => $host->readTimeLimit(...)] as $option => $read) {
+            try {
+                $read();
+                self::fail(sprintf('an undeclared --%s must be refused', $option));
+            } catch (InvalidOptionException $e) {
+                $messages[$option] = $e->getMessage();
+            }
+        }
+
+        $remedy = "The daemon options are not declared: call configureDaemon() from the host command's configure().";
+        self::assertSame(['sleep' => $remedy, 'time-limit' => $remedy], $messages);
     }
 
     /**

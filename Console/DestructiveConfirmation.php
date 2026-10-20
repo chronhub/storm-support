@@ -10,19 +10,26 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
- * The deliberation gate a destructive verb owes its operator, in one place so every verb asks the same
- * way.
+ * The confirmation gate a destructive verb owes its operator, in one place so every verb asks alike.
  *
- * Three outcomes, and each answers a different question. `--force` means the caller already decided,
- * typically a runbook, and nothing is asked. A non-interactive session without it is refused as a
- * malformed invocation, since there is nobody to answer and an unattended erase is exactly what the
- * gate exists to stop. An interactive session is asked, defaulting to no, and a decline is a SUCCESS:
- * the run did what it was told, which was nothing, so a chained command behind it may keep going.
+ * It has three outcomes, each answering a different question:
  *
- * The prompt names the target and the consequence rather than asking for a blanket yes. What earns the
- * gate is almost never the deliberate erase; it is the typo that reaches a valid name.
+ * - `--force` means the caller already decided, typically a runbook, and nothing is asked.
  *
- * Host wiring: call `configureForce()` from `configure()`, then `confirmDestructive()` from `execute()`
+ * - A non-interactive session without it is refused as a malformed invocation: nobody can answer,
+ *   and an unattended erase is what the gate exists to stop.
+ *
+ * - An interactive session is asked, defaulting to no. A decline is a success: the run did what it
+ *   was told, which was nothing, so a chained command behind it may keep going.
+ *
+ * A host that declares `--json` and receives it is driven by a script, even on a terminal: a prompt
+ * would block the pipeline and print a question into the document, so that session counts as
+ * non-interactive. The refusal goes to the error output, leaving stdout to the document.
+ *
+ * The prompt names the target and the consequence rather than asking for a blanket yes, since what
+ * the gate catches is almost never the deliberate erase but the typo that reaches a valid name.
+ *
+ * A host must call `configureForce()` from `configure()`, then `confirmDestructive()` from `execute()`
  * before the first irreversible call, and return its value when it is not null.
  *
  * @see DaemonLoop for the same host-trait shape on the daemon options
@@ -58,8 +65,10 @@ trait DestructiveConfirmation
             return null;
         }
 
-        if (! $input->isInteractive()) {
-            $io->error(sprintf('%s The session is non-interactive: pass --force to confirm.', $consequence));
+        $scripted = $input->hasOption('json') && $input->getOption('json') === true;
+
+        if ($scripted || ! $input->isInteractive()) {
+            $io->getErrorStyle()->error(sprintf('%s The session is non-interactive: pass --force to confirm.', $consequence));
 
             return Command::INVALID;
         }

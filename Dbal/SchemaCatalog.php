@@ -5,19 +5,18 @@ declare(strict_types=1);
 namespace Storm\Support\Dbal;
 
 /**
- * What a package declares its installed schema must look like: the verification data
- * {@see SchemaProbe} reads back from the PostgreSQL catalogs. It is NOT DDL; it mirrors what the
- * owning `*Schema` classes create, scoped to what the runtime actually relies on.
+ * What a package declares its installed schema must look like, read back by {@see SchemaProbe}.
  *
- * The split is the placement rule of `Support` applied literally: the probe owns the HOW, the loop
- * and the queries, mechanical and tested once; a catalog owns the WHAT, which table and which
- * index-shape matters, and stays with the package that declares it. So `Ledger` and `Saga` verify
- * their schemas with the same probe while depending on nothing of each other.
+ * It is verification data rather than DDL: it mirrors what the owning `*Schema` classes create,
+ * scoped to what the runtime relies on. It exists because `CREATE … IF NOT EXISTS` takes an object of
+ * the declared name for the declared object: a pre-existing table missing a column, or a homonymous
+ * index that lost its partial predicate, no-ops the DDL, and an install would report success on a
+ * schema the runtime cannot use.
  *
- * Why any of this exists: `CREATE … IF NOT EXISTS` treats "an object of this name exists" as "the
- * object is the one declared". A pre-existing table missing a column, or a homonymous index that
- * lost its partial predicate, no-ops the DDL and an install would report success on a schema the
- * runtime cannot use.
+ * The split is the placement rule of `Support` applied literally. The probe and `SchemaDiff` own the
+ * how, the queries and the loop, mechanical and tested once; a catalog owns the what, which table and
+ * which index shape matters, and stays with the package that declares it. `Ledger` and `Saga` thus
+ * verify their schemas with the same probe while depending on nothing of each other.
  */
 final readonly class SchemaCatalog
 {
@@ -25,7 +24,7 @@ final readonly class SchemaCatalog
      * @param  array<string, array<string, string|null>>  $columns  per table, column name => a fragment
      *                                                              the live column shape must start with,
      *                                                              ending on a word, or
-     *                                                              null to check presence only. The probe
+     *                                                              null to check presence only. `SchemaDiff`
      *                                                              composes the live shape from
      *                                                              `format_type` plus ` not null` or
      *                                                              ` null`, so `bigint not null` pins type
@@ -34,16 +33,16 @@ final readonly class SchemaCatalog
      *                                                              a collation is the whole shape and must
      *                                                              equal it, by the rule of `ColumnShape`.
      *                                                              The table keys are also the set of
-     *                                                              VERIFIABLE tables, so a table absent
+     *                                                              verifiable tables, so a table absent
      *                                                              here is reported rather than passed
-     * @param  array<string, array<string, string|null>>  $constraints  per table, constraint name => a
-     *                                                                  needle for the live
-     *                                                                  `pg_get_constraintdef`, or null to check
-     *                                                                  presence only. A complete definition,
-     *                                                                  opening on its keyword, must equal it;
-     *                                                                  any other needle is a fragment it must
-     *                                                                  contain, by the rule of `ConstraintShape`.
-     *                                                                  A name proves nothing about a
+     * @param  array<string, array<string, string|null>>  $constraints  per table, constraint name => a needle
+     *                                                                  for the live `pg_get_constraintdef`,
+     *                                                                  or null to check presence only. A
+     *                                                                  complete definition, opening on its
+     *                                                                  keyword, must equal it; any other
+     *                                                                  needle is a fragment it must contain,
+     *                                                                  by the rule of `ConstraintShape`. A
+     *                                                                  name proves nothing about a
      *                                                                  pre-existing homonym, and a CHECK that
      *                                                                  silently lost a value it must admit
      *                                                                  bites at runtime, not at install
@@ -55,10 +54,10 @@ final readonly class SchemaCatalog
      *                                                              get verified rather than assumed
      * @param  list<string>  $partitioned  tables that must be partitioned parents, `relkind = 'p'`
      * @param  array<string, string>  $defaultPartitions  parent table => the DEFAULT partition that must be
-     *                                                    ATTACHED to it. A detached child keeps its name, so
-     *                                                    `CREATE TABLE … PARTITION OF … DEFAULT` no-ops on it
-     *                                                    exactly as every other `IF NOT EXISTS` does: the
-     *                                                    parent keeps `relkind = 'p'` and its named
+     *                                                    attached to it. A detached child keeps its name, so
+     *                                                    `CREATE TABLE … PARTITION OF … DEFAULT` no-ops
+     *                                                    on it exactly as every other `IF NOT EXISTS` does:
+     *                                                    the parent keeps `relkind = 'p'` and its named
      *                                                    partitions, verifies green, and has nowhere left to
      *                                                    route a category it does not name
      * @param  array<string, array<string, string>>  $identities  per table, column name => the expected

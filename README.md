@@ -7,10 +7,11 @@ live in `Contracts`, either because they touch an infra vendor (e.g. Doctrine DB
 they carry executable logic where `Contracts` holds interfaces only.
 
 It sits at the bottom of the dependency DAG: it depends on **no feature module**, only on the
-`Contracts` ports it implements, which depend on nothing, so every module above may depend on it
-without a cycle. In deptrac it is `Support: [Contracts]`; consumers add `Support` to their own
-allowlist, case by case — the rules then show exactly who uses it, rather than implying a blanket
-dependency.
+`Contracts` ports it implements, the `Text` string rules it applies and the `Clock` duration it
+reads, none of which depends on a feature module either, so every module above may depend on it
+without a cycle. In deptrac it is `Support: [Contracts, Clock, Text]`; consumers add `Support` to
+their own allowlist, case by case — the
+rules then show exactly who uses it, rather than implying a blanket dependency.
 
 ## Placement rule (to keep this from becoming a junk drawer)
 
@@ -30,7 +31,9 @@ A class belongs in `Support` only when **all** hold:
 4. **References no feature module** — never `use Storm\<feature>\…`. That keeps it at the bottom of
    the DAG.
 
-Group by concern in sub-namespaces (`Support\Dbal\…`).
+Group by concern in sub-namespaces (`Support\Dbal\…`). A value object of shared policy VOCABULARY,
+the extension of rule 3, sits at the module root instead, since it belongs to no technical concern:
+`OutboxDisposal` is the case.
 
 ## Current residents
 
@@ -45,30 +48,53 @@ Group by concern in sub-namespaces (`Support\Dbal\…`).
   package that declares it. That is rule 3 applied exactly: the *how* lives here, the *what* does
   not, which is what lets `Ledger` and the opt-in `Saga`, which may not depend on each other, verify
   their schemas with one mechanism.
+- `Dbal\SchemaDiff` — the verdict half of the probe: the rows the probe read, set against the
+  catalog and rendered as the problems an installer reports, in a fixed order. Pure, so every
+  comparison stays in the mutation field, while the probe keeps only its queries, the `search_path`
+  restore, and its `@infection-ignore-all`.
+- `Dbal\ColumnShape` + `Dbal\ConstraintShape` — the two comparison rules the diff applies, pure
+  functions kept outside the probe's `@infection-ignore-all`: a column fragment naming a collation
+  equals the live shape, any other opens it; a constraint needle opening on its keyword equals the
+  live definition, any other is contained in it.
+- `Dbal\InstallLock` — the installers' advisory lock, taken inside the caller's transaction or
+  refused, within a few bounded attempts under a `lock_timeout`, so two installs of one schema never
+  interleave; shared by `storm:install`, `storm:saga:install` and `storm:telemetry:install`.
 - `Console\DaemonLoop` — makes a one-shot "drain once and exit" console command an optional
   in-process daemon (`--daemon`/`--sleep`/`--time-limit`, parsed strictly — a malformed value
   refuses loud, never falls back), amortising the framework bootstrap.
+- `Console\GracefulSignals` — the SIGTERM/SIGINT stop of a looping command: a signal waits for the
+  unit in flight to commit while a loop reads the flag, and exits at once when none does; composed
+  by `DaemonLoop`, `storm:bus:consume-batched` and `storm:projection:run`.
 - `Console\PositiveIntOption` — strict positive-integer option parsing; rejects what PHP's silent
   `(int)` cast would turn into a hidden 0, and what it would saturate past `PHP_INT_MAX`.
+- `Console\TimeLimitOption` — the strict `--time-limit` parse: `0` means unlimited, any other value
+  is a positive number of seconds up to a year; read by `DaemonLoop`, `storm:projection:run` and
+  `storm:bus:consume-batched`.
+- `Console\DestructiveConfirmation` — the host trait a destructive console command clears before its
+  first irreversible call: `--force` skips the question, a non-interactive session without it is
+  refused, an interactive one is asked and defaults to no, and a decline exits as a success. A host
+  that declares `--json` and receives it counts as non-interactive, and the refusal goes to the
+  error output so the document on stdout stays parsable.
+- `Console\DurationOption` — reads a console option naming a duration through `Clock\Duration`,
+  required or optional, so every command refuses a bad one with the same message on the error
+  output; an optional one that cannot be parsed is refused, never read as no filter at all.
 - `Error\AuditDigest` — Throwable → compact persist-safe audit string for `last_error` columns
   (cause chain walked, scrubbed to valid UTF-8, controls neutralised, NUL-stripped, char-capped),
   shared by both outbox relays, the saga TimerRunner and the bundle's SagaCommandFailureListener.
 - `Error\TransientFailure` — the MECHANISM of rule 3 again, on the sibling question: does this
-  Throwable's cause chain name the infrastructure (a Messenger transport failure or its recoverable
-  marker, any Doctrine DBAL failure) rather than the message itself? Shared by both outbox relays,
+  Throwable's cause chain name an outage (a Messenger transport failure or its recoverable marker,
+  a Doctrine DBAL failure that clears by itself or by deployment, recognized by class or SQLSTATE;
+  any other DBAL failure stays poison) rather than the message itself? Shared by both outbox relays,
   which ask it before their own dead-letter gate so a broker outage is never converted into an
   operator's replay. It answers; the *decision* of what to do with the answer, and at which gate,
   stays with each relay. Messenger is an optional companion here, matched by name so the substrate
   keeps no transport of its own.
-- `Text\Str` — the string rules several packages must apply identically, written once so their
-  copies cannot drift: `isBlank()`, a blank test that spans Unicode separators, and `printable()`,
-  the log-safe echo of a refused value. A method enters only when two or more packages consume it,
-  under a named policy, with its test; a one-package helper stays where it is used. An operation
-  that takes parameters returns a `Closure(string): string`, so the call itself is the pipe stage.
 - `Random\NativeJitter` — the production draw behind the `Contracts` `Jitter` port: a uniform
-  `random_int` between the bounds a backoff asks for. The saga activity runner and both outbox
-  relays take the port, defaulting to this draw, so a test reads the range they ask for and answers
-  either end of it instead of sampling.
+  `random_int` between the bounds a backoff asks for. The saga activity runner, both outbox relays,
+  the event store's retry decorator, the concurrency-conflict middleware and the projection batch
+  executor take the port, defaulting to this draw, so a test reads the range they ask for and
+  answers either end of it instead of sampling. `RandomSourceConventionTest` refuses a `random_int`
+  call anywhere else in `src`.
 - `OutboxDisposal` — the shared policy VOCABULARY (rule 3's deliberate extension): what becomes of
   an outbox row at terminal success, `delete` or `archive`, shared by the event and saga outboxes.
   Disposal concerns SUCCESSFUL rows only; failed rows stay hot for forensics, and their later

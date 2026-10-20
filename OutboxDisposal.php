@@ -5,26 +5,26 @@ declare(strict_types=1);
 namespace Storm\Support;
 
 /**
- * What becomes of an outbox row once its message is successfully published; the shared policy
- * VOCABULARY between the event outbox `es_outbox` in chronicler and the saga command outbox
- * `workflow_outbox` in saga. Support names the options; the DECISION stays with the caller and its
- * config. Failed rows are never subject to disposal: they stay in the hot table for forensics and
- * replay by the dead-letter tooling, whatever the mode; their eventual cleanup is the prune-by-age
- * of that tooling, a separate concern.
+ * What becomes of an outbox row once its message is published successfully.
  *
- * - `Delete`, the default: a queue table is not a ledger. The durable record lives elsewhere, the
- *   event in `event_store`, the saga's steps in its history sink, consumption proof in `es_inbox`,
- *   so the row dies at terminal success. The hot table stays tiny, which is what keeps autovacuum
- *   ahead of the pending-index graveyard during a flood and the relay's own poll cheap.
+ * It is the policy vocabulary that the event outbox `es_outbox` of Chronicler and the saga command
+ * outbox `workflow_outbox` share. `Support` names the options; the decision stays with the caller and
+ * its config. Failed rows are never disposed of: whatever the mode, they stay in the hot table for
+ * forensics and replay by the dead-letter tooling, whose prune by age cleans them up separately.
  *
- * - `Archive`: the row moves out of the hot path to an append-only `*_archive` sibling, via one
- *   atomic `DELETE … RETURNING` feeding an `INSERT` at the end of the drain batch. This is the
- *   delivery audit for devs who want one, at the cost of the appending write. The hot table stays
- *   exactly as tiny as with `Delete`; the intra-flood win is identical, only the storage story
- *   differs. The archive has its own retention, the prune commands sweeping it by age.
+ * - `Delete`, the default, removes the row at terminal success, since a queue table is no ledger and
+ *   the durable record lives elsewhere: the event in `event_store`, the saga's steps in its history
+ *   sink, the consumption proof in `es_inbox`. The hot table stays tiny, which keeps autovacuum ahead
+ *   of the dead entries a flood leaves in the pending index, and the relay's own poll cheap.
  *
- * String-backed so the value binds straight from bundle config `storm.outbox.disposal` and
- * `storm.saga.command_outbox.disposal`.
+ * - `Archive` moves the row out of the hot path to an append-only `*_archive` sibling, through one
+ *   atomic `DELETE … RETURNING` feeding an `INSERT` at the end of the drain batch. It is the delivery
+ *   audit for developers who want one, at the cost of the appending write. The hot table stays as
+ *   tiny as with `Delete`, with the same gain during a flood; only the storage differs. The archive
+ *   has its own retention, which the prune commands sweep by age.
+ *
+ * It is string-backed so the value binds straight from the bundle config keys
+ * `storm.outbox.disposal` and `storm.saga.command_outbox.disposal`.
  */
 enum OutboxDisposal: string
 {

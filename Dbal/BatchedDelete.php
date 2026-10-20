@@ -7,51 +7,59 @@ namespace Storm\Support\Dbal;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception;
 use InvalidArgumentException;
-use Storm\Support\Text\Str;
+use Storm\Text\Str;
 
 /**
- * The batched-delete primitive shared by the framework's retention prunes: Chronicler inbox/outbox,
- * aggregate snapshots, saga bookkeeping, telemetry history. Deletes the rows matching `$predicate` in
- * capped batches via `ctid IN (SELECT ctid … LIMIT n FOR UPDATE SKIP LOCKED)`, looping until none
- * remain, so a large prune is many short statements rather than one long lock. PostgreSQL-only by
- * construction through `ctid` and `SKIP LOCKED`; the store it serves is too.
+ * The batched delete shared by the framework's retention prunes.
  *
- * CONCURRENT prunes are cooperative, not blocking: `SKIP LOCKED` makes overlapping runs claim
- * disjoint batches instead of queueing on the same ctids. A run that waited out its neighbor
- * instead would read the post-commit `0 affected` as "nothing left" and abandon the remaining
- * eligible rows. Consequence to know: the RETURN VALUE is the rows THIS run deleted; under overlap
- * the policy's total is the sum across runs, and the last runner leaves the table clean.
+ * Its callers prune:
  *
- * The caller owns the table and the predicate, its retention rule being the domain part; this owns only
- * the lock-avoiding loop, the one mechanical part worth writing and testing once. `$table` and
- * `$predicate` are BOTH trusted, static SQL authored by the calling store: every runtime value must
- * be a bound `$bindings` parameter, never interpolated; the table is additionally gated to a plain
- * identifier at runtime, so the trust is checkable rather than assumed.
+ * - The Chronicler inbox and outbox
+ * - Aggregate snapshots
+ * - Saga bookkeeping
+ * - Telemetry history
  *
- * Partitioned parents and inheritance parents are refused according to the relation resolved by
- * the connection's search path. This initial catalog check is a snapshot, not a topology lock.
- * Each batch uses `ONLY` for both selection and deletion, so a child added after that check
- * cannot lose rows through a colliding `ctid`. The helper does not stabilize table names or
- * topology for the duration of the purge. Prune children separately or use a predicate-scoped
- * `DELETE` when descendant traversal is required.
+ * It deletes the rows matching `$predicate` in capped batches through
+ * `ctid IN (SELECT ctid … LIMIT n FOR UPDATE SKIP LOCKED)`, looping until none remain, so a large
+ * prune is many short statements rather than one long lock. `ctid` and `SKIP LOCKED` make it
+ * PostgreSQL-only, as is the store it serves.
  *
- * Stateless on purpose: the caller already holds the connection with its own transactional context, so
- * this stays a pure function rather than a wired service.
+ * Concurrent prunes cooperate rather than block: `SKIP LOCKED` lets overlapping runs claim disjoint
+ * batches instead of queueing on the same ctids. A run that waited out its neighbor would read the
+ * post-commit `0 affected` as nothing left and abandon the remaining eligible rows. The return value
+ * is the rows this run deleted; under overlap the policy's total is the sum across runs, and the last
+ * runner leaves the table clean.
+ *
+ * The caller owns the table and the predicate, its retention rule being the domain part; this class
+ * owns only the lock-avoiding loop, the one mechanical part worth writing and testing once. `$table`
+ * and `$predicate` must both be trusted static SQL authored by the calling store, and every runtime
+ * value must be bound through `$bindings`, never interpolated. The table is also checked at runtime
+ * to be a plain identifier, so that trust is verified rather than assumed.
+ *
+ * Partitioned and inheritance parents are refused, as resolved through the connection's search path.
+ * That catalog check is a snapshot, not a topology lock. Each batch uses `ONLY` for both selection and
+ * deletion, so a child added after the check cannot lose rows through a colliding `ctid`, but the
+ * helper does not hold table names or topology stable during the purge. Prune children separately, or
+ * use a predicate-scoped `DELETE` when descendant traversal is required.
+ *
+ * It is stateless: the caller already holds the connection and its transactional context, so this
+ * stays a pure function rather than a wired service.
  */
 final class BatchedDelete
 {
     /**
-     * @param  string  $predicate  the `WHERE` body without the `WHERE` keyword, e.g. `archived_at < :age`.
-     *                             It runs against the table unaliased, so qualify by the real table name when needed,
-     *                             for example `NOT EXISTS (… WHERE h.stream = snapshots.stream)`, never a custom alias.
+     * @param  string  $predicate  the `WHERE` body without the `WHERE` keyword, e.g. `archived_at < :age`. It
+     *                             runs against the table unaliased, so qualify by the real table name when
+     *                             needed, for example `NOT EXISTS (… WHERE h.stream = snapshots.stream)`,
+     *                             never a custom alias.
      * @param  array<string, mixed>  $bindings  values bound into `$predicate`
      * @param  int  $batch  rows deleted per statement, the lock cap; guarded at runtime, since a PHPDoc
      *                      annotation is no boundary for a public helper that builds SQL, and an
      *                      unguarded 0 would issue `LIMIT 0`, end the loop on its first pass and
      *                      report a clean prune with every eligible row still there
      *
-     * @throws InvalidArgumentException when `$batch` is not strictly positive, `$table` is not a
-     *                                  plain identifier, or `$table` names a partitioned or inheritance parent;
+     * @throws InvalidArgumentException when `$batch` is not strictly positive, `$table` is not a plain
+     *                                  identifier, or `$table` names a partitioned or inheritance parent;
      *                                  caller bugs, each refused before any row is touched
      * @throws Exception on a DBAL delete failure
      */

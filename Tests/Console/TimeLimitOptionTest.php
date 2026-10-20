@@ -14,10 +14,11 @@ use stdClass;
 use Storm\Support\Console\TimeLimitOption;
 
 /**
- * The one clock cap of the console surface, and the asymmetry that makes it safe: `0` passes because
- * it is the deliberate word for unlimited, while everything a naive cast would ALSO turn into 0 is
- * refused. The named tests below pin the two bugs that shape the class, a typo buying an unlimited
- * daemon and a forty-nine cap saturating into one; the providers fence the boundaries.
+ * The one clock cap of the console surface, and the asymmetry that makes it safe.
+ *
+ * `0` passes as the explicit word for unlimited, while everything else a naive cast would turn into 0
+ * is refused. The named tests pin the two bugs that shape the class, a typo buying an unlimited daemon
+ * and a cap of forty nines saturating into one; the providers cover the boundaries.
  */
 final class TimeLimitOptionTest extends TestCase
 {
@@ -34,8 +35,8 @@ final class TimeLimitOptionTest extends TestCase
     #[Group('adversarial')]
     public function a_mistyped_cap_is_refused_rather_than_becoming_the_unlimited_nobody_asked_for(): void
     {
-        // The whole reason the class exists rather than a cast: (int) 'abc' and (int) '-5' are both 0,
-        // which here does not mean "fall back to a default", it means "run until the box gives out".
+        // the class exists because (int) 'abc' and (int) '-5' are both 0, and 0 here means a daemon that
+        // never recycles rather than a fallback to the default
         self::assertNull(TimeLimitOption::parse('abc'));
         self::assertNull(TimeLimitOption::parse('-5'));
         self::assertNull(TimeLimitOption::parse('00'), 'one spelling of unlimited, exactly');
@@ -108,8 +109,8 @@ final class TimeLimitOptionTest extends TestCase
     #[Group('adversarial')]
     public function an_unrepresentable_cap_is_refused_not_saturated(): void
     {
-        // PHP saturates an over-long digit string at PHP_INT_MAX, so a fat-fingered cap would arrive as
-        // a number the ceiling then has to catch; both gates are pinned, the parse and the bound
+        // PHP saturates an over-long digit string at PHP_INT_MAX, so a mistyped cap would arrive as a
+        // number the ceiling then has to catch; both gates are pinned, the parse and the bound
         self::assertNull(TimeLimitOption::parse('9223372036854775808'));
         self::assertNull(TimeLimitOption::parse(str_repeat('9', 40)));
     }

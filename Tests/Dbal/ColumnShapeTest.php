@@ -10,8 +10,7 @@ use PHPUnit\Framework\TestCase;
 use Storm\Support\Dbal\ColumnShape;
 
 /**
- * The fragment grammar of a declared column, a prefix for type and nullability, equality for a
- * named collation.
+ * The fragment grammar of a declared column: a prefix for type and nullability, equality for a collation.
  *
  * The named test pins the case a containment check admits, a pin moved to a collation whose name
  * only starts like `C`.

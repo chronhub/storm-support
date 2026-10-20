@@ -13,35 +13,40 @@ use function sprintf;
 use function usleep;
 
 /**
- * The two waits an installer can hit, both BOUNDED, taken at the top of its transaction.
+ * The two waits an installer can hit, both bounded, taken at the top of its transaction.
  *
- * `pg_advisory_xact_lock` waits, and waits forever: behind a stuck or orphaned sibling a deploy hook
- * shows no output, no error and no end, which reads as a hung deployment with nothing to diagnose.
- * A brief try-lock retry forgives the sub-second overlap of two deploys racing each other, then
- * names the real situation and lets the caller fail with an exit code a hook can act on.
+ * `pg_advisory_xact_lock` waits forever: behind a stuck or orphaned sibling, a deploy hook shows no
+ * output, no error and no end, a hung deployment with nothing to diagnose. A brief try-lock retry
+ * absorbs the sub-second overlap of two racing deploys, then names the real situation and lets the
+ * caller fail with an exit code a hook can act on.
  *
- * The second wait is the DDL's own, and no advisory key bounds it: an additive index declared since
- * the last deploy takes a lock on a table a live system is reading, and a standard build queues
- * behind every transaction already open on it. `lock_timeout` turns that hang into a failure an
- * operator can read; the way out on a large live table is a concurrent build outside any
- * transaction, which PostgreSQL forbids inside one, then a re-run to verify.
+ * The second wait is the DDL's own, which no advisory key bounds: an additive index declared since
+ * the last deploy locks a table a live system is reading, and a standard build queues behind every
+ * transaction already open on it. `lock_timeout` turns that hang into a failure an operator can read;
+ * on a large live table the way out is a concurrent build outside any transaction, which PostgreSQL
+ * forbids inside one, then a re-run to verify.
  *
- * Both are transaction-scoped, so the caller opens its transaction first and both end with the
- * commit or the rollback; there is nothing to unlock and no leak on a crash. Called outside one,
- * `SET LOCAL` would be a silent no-op and the DDL bound a promise on paper, so the absence of a
+ * Both waits are transaction-scoped, so the caller must open its transaction first, and both end with
+ * the commit or the rollback: there is nothing to unlock and nothing leaks on a crash. Outside a
+ * transaction `SET LOCAL` would be a silent no-op, leaving the DDL wait unbounded, so the absence of a
  * transaction is refused rather than tolerated.
  *
- * Mechanical on purpose, and shared: the three installers had one bounded implementation and two
- * that waited, which is a contract that differs by which command an operator happened to run.
+ * It is mechanical and shared by the three installers, so their waits cannot differ by which command
+ * an operator happens to run.
  */
 final class InstallLock
 {
-    /** Roughly eight tenths of a second in total, enough to absorb two deploys overlapping, short enough to answer. */
+    /**
+     * Roughly eight tenths of a second in total, enough to absorb two deploys overlapping, short enough to
+     * answer.
+     */
     private const int ATTEMPTS = 5;
 
     private const int PAUSE_MICROSECONDS = 200_000;
 
-    /** The DDL wait budget: past normal statement turnover on a live table, well short of a hook that hangs. */
+    /**
+     * The DDL wait budget: past normal statement turnover on a live table, well short of a hook that hangs.
+     */
     public const int LOCK_TIMEOUT_MS = 5_000;
 
     /**
@@ -75,9 +80,8 @@ final class InstallLock
             }
         }
 
-        // the target is read HERE rather than passed in: a hook that fails while pointed at a
-        // database nobody expected is the confusing case, and the message is the only place an
-        // operator learns which one it was
+        // the target is read here rather than passed in: a hook failing against an unexpected database
+        // is the confusing case, and the message is the only place an operator learns which one it was
         $home = (string) $connection->fetchOne(
             /* language=PostgreSQL */
             "SELECT current_database() || '/' || current_schema()",

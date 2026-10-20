@@ -10,8 +10,8 @@ use PHPUnit\Framework\TestCase;
 use Storm\Support\Dbal\ConstraintShape;
 
 /**
- * The needle grammar of a declared constraint, equality for a complete definition and containment
- * for a fragment.
+ * The needle grammar of a declared constraint: equality for a complete definition, containment for a
+ * fragment.
  *
  * The named test pins the case containment admits, a homonym that only wraps the declared check.
  */

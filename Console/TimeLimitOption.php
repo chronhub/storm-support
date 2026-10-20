@@ -7,21 +7,21 @@ namespace Storm\Support\Console;
 /**
  * Strict parsing for a long-running command's `--time-limit`, the console surface's one clock cap.
  *
- * `0` is the ONLY spelling of unlimited and it has to be asked for, exactly, never stumbled into: a
- * process that never recycles is a leak on a schedule, and the finite default is what prevents it. A
- * naive cast would turn `abc` and `-5` into that same `0` and disable the barrier in silence, so
- * anything else is refused rather than floored. The ceiling is a year, past which a cap is
- * indistinguishable from the unlimited nobody asked for.
+ * Only the exact `0` means unlimited, and it must be asked for: a process that never recycles
+ * accumulates memory without bound, which the finite default prevents. A naive cast would turn `abc`
+ * and `-5` into that same `0` and silently disable recycling, so any other value is refused rather
+ * than floored.
  *
- * Every command that stays up reads its cap through here, so the two spellings cannot drift: the
- * `DaemonLoop` hosts turn a refusal into an `InvalidOptionException`, since they parse before the
- * command owns its exit code, and a command parsing it inline turns it into `Command::INVALID` with
- * its own message.
+ * Every command that stays up reads its cap through here, so the two spellings cannot drift:
+ *
+ * - The `DaemonLoop` hosts turn a refusal into an `InvalidOptionException`, since they parse before
+ *   the command owns its exit code.
+ * - A command parsing it inline turns it into `Command::INVALID` with its own message.
  */
 final class TimeLimitOption
 {
     /**
-     * A year of seconds: the point past which a finite cap stops differing from unlimited.
+     * A year of seconds, past which a finite cap no longer differs from the unlimited nobody asked for.
      */
     public const int MAX_SECONDS = 31_536_000;
 

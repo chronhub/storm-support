@@ -15,16 +15,18 @@ use stdClass;
 use Storm\Support\Console\PositiveIntOption;
 
 /**
- * The strict guard the batch/prune/relay options lean on: a positive integer passes through, everything
- * else is null, never PHP's silent `(int)` 0. The named test below pins the exact motivating bug that
- * `--batch=abc` must be rejected, not cast to a hidden default; the providers fence the boundaries.
+ * The strict guard behind the batch, prune and relay options.
+ *
+ * A positive integer passes through and everything else is null, never PHP's silent `(int)` 0. The
+ * named test pins the bug behind it: `--batch=abc` must be rejected, never cast to a hidden default;
+ * the providers cover the boundaries.
  */
 final class PositiveIntOptionTest extends TestCase
 {
     #[Test]
     public function rejects_a_non_numeric_option_instead_of_silently_casting_to_zero(): void
     {
-        // The whole reason the class exists: (int) 'abc' === 0 would have re-armed a hidden default.
+        // the class exists because (int) 'abc' === 0 would silently fall back to a hidden default
         self::assertNull(PositiveIntOption::parse('abc'));
     }
 
@@ -107,7 +109,7 @@ final class PositiveIntOptionTest extends TestCase
     #[Group('adversarial')]
     public function an_unrepresentable_integer_is_refused_not_saturated(): void
     {
-        // PHP saturates an over-long digit string at PHP_INT_MAX, which silently removed the
+        // PHP saturates an over-long digit string at PHP_INT_MAX, which would silently lift the
         // operator's cap: a --batch of forty nines would process practically the whole table
         self::assertSame(PHP_INT_MAX, PositiveIntOption::parse((string) PHP_INT_MAX), 'the exact max is representable');
         self::assertNull(PositiveIntOption::parse('9223372036854775808'), 'max + 1 is not');

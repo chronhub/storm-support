@@ -9,11 +9,12 @@ use function is_int;
 use function is_string;
 
 /**
- * Strict positive-integer parsing for an operator-supplied count, on the console and on the ops HTTP
- * surface that twins it; `--batch=abc` must be rejected, never become PHP's silent `(int)` 0. A zero
- * reaches the store as `LIMIT 0`, so a drain claims no row while the command still reports a clean
- * pass, without a word to the operator. The caller turns null into `Command::INVALID`, or into the
- * surface's 422, with its own parameter-specific message.
+ * Strict positive-integer parsing for an operator-supplied count.
+ *
+ * It serves the console and the ops HTTP surface that mirrors it. `--batch=abc` must be rejected,
+ * never become PHP's silent `(int)` 0: a zero reaches the store as `LIMIT 0`, so a drain claims no
+ * row while the command still reports a clean pass, without a word to the operator. The caller turns
+ * null into `Command::INVALID`, or into the surface's 422, with its own message for the parameter.
  */
 final class PositiveIntOption
 {
@@ -27,9 +28,8 @@ final class PositiveIntOption
         }
 
         if (is_string($raw) && ctype_digit($raw)) {
-            // refuse what an int cannot REPRESENT before casting: PHP saturates an over-long digit
-            // string at PHP_INT_MAX, which silently removes the operator's cap. A 40-nine --batch
-            // would mean "process practically the whole table in one pass"
+            // refuse what an int cannot represent before casting: PHP saturates an over-long digit string
+            // at PHP_INT_MAX and silently lifts the cap, so a 40-nine --batch would drain the whole table
             $max = (string) PHP_INT_MAX;
             $canonical = ltrim($raw, '0');
 

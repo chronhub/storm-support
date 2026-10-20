@@ -13,7 +13,7 @@ use function str_starts_with;
  * The rule by which a live constraint definition meets the needle a {@see SchemaCatalog} declares.
  *
  * `pg_get_constraintdef` renders the whole definition. A needle that opens on the keyword of a
- * complete definition IS that definition and must equal it, since containment would let
+ * complete definition is that definition and must equal it, since containment would let
  * `CHECK (((version > 0) OR true))` pass for `CHECK ((version > 0))`. The keywords are:
  *
  * - `CHECK `

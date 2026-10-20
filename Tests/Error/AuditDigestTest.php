@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 namespace Storm\Support\Tests\Error;
 
+use Doctrine\DBAL\Driver\AbstractException;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use LogicException;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Storm\Support\Error\AuditDigest;
+use Throwable;
 
 final class AuditDigestTest extends TestCase
 {
@@ -71,7 +75,7 @@ final class AuditDigestTest extends TestCase
 
         $digest = AuditDigest::digest($current);
 
-        // We should see depth-0 .. depth-(MAX_CAUSE_DEPTH-1), but NOT the tail.
+        // We should see depth-0 .. depth-(MAX_CAUSE_DEPTH-1), but not the tail.
         self::assertStringContainsString('depth-0', $digest);
         self::assertStringContainsString('depth-'.(AuditDigest::MAX_CAUSE_DEPTH - 1), $digest);
         self::assertStringNotContainsString('depth-'.AuditDigest::MAX_CAUSE_DEPTH, $digest);
@@ -95,8 +99,8 @@ final class AuditDigestTest extends TestCase
     #[Test]
     public function strips_a_nul_byte_in_the_exception_message(): void
     {
-        // a NUL in the MESSAGE, not just the anon-class name, would truncate the digest in a Postgres
-        // text column, swallowing the cause chain after it.
+        // a NUL in the message, not only in an anonymous-class name, would truncate the digest in a
+        // PostgreSQL text column and drop the cause chain after it
         $digest = AuditDigest::digest(new RuntimeException("before\0after"));
 
         self::assertStringNotContainsString("\0", $digest);
@@ -118,8 +122,8 @@ final class AuditDigestTest extends TestCase
     #[Test]
     public function caps_by_characters_not_bytes(): void
     {
-        // Postgres `varchar(n)` / `text` bound length in CHARACTERS, not bytes; the cap uses
-        // mb_strlen / mb_substr to match, and must never split a character mid-byte.
+        // PostgreSQL `varchar(n)` and `text` bound length in characters, not bytes, so the cap uses
+        // mb_strlen and mb_substr to match, and must never split a character mid-byte
         $multibyte = str_repeat('é', AuditDigest::MAX_ERROR_CHARS * 2); // 'é' is 2 UTF-8 bytes
 
         $digest = AuditDigest::digest(new RuntimeException($multibyte));
@@ -144,9 +148,8 @@ final class AuditDigestTest extends TestCase
     #[Group('adversarial')]
     public function invalid_bytes_are_scrubbed_to_valid_utf8(): void
     {
-        // a Throwable message is not contracted UTF-8; one stray 0xFF would fail the
-        // dead-letter INSERT with 22021 while HANDLING an error, turning a recordable poison into a
-        // worker crash-loop
+        // a Throwable message need not be UTF-8: one stray 0xFF would fail the dead-letter INSERT with
+        // 22021 while recording an error, turning a recordable poison into a worker crash-loop
         $digest = AuditDigest::digest(new RuntimeException("bad\xFFbytes"));
 
         self::assertTrue(mb_check_encoding($digest, 'UTF-8'), 'persist-safe means VALID UTF-8, for every Throwable');
@@ -167,5 +170,80 @@ final class AuditDigestTest extends TestCase
         self::assertStringNotContainsString("\x1b", $digest);
         self::assertStringContainsString(AuditDigest::CAUSE_SEPARATOR, $digest);
         self::assertStringContainsString('the cause', $digest);
+    }
+
+    #[Test]
+    public function outlines_each_level_as_its_class_and_code_without_its_message(): void
+    {
+        $outline = AuditDigest::outline(new RuntimeException('quotes FR76 3000', 42, new LogicException('quotes ada@example.com', 7)));
+
+        self::assertSame("RuntimeException (code 42)\ncaused by: LogicException (code 7)", $outline);
+    }
+
+    #[Test]
+    public function outlines_the_sqlstate_a_dbal_driver_reports(): void
+    {
+        // the DBAL wrapper reports the driver's code, useless on pgsql, so the SQLSTATE rides beside it;
+        // the DETAIL line names the conflicting value and stays out
+        $detail = "ERROR:  duplicate key value\nDETAIL:  Key (iban)=(FR76 3000) already exists.";
+        $violation = new UniqueConstraintViolationException(new class($detail, '23505', 7) extends AbstractException {}, null);
+
+        self::assertSame(
+            UniqueConstraintViolationException::class.' (code 7, SQLSTATE 23505)'
+                ."\ncaused by: Doctrine\\DBAL\\Driver\\AbstractException@anonymous (code 7, SQLSTATE 23505)",
+            AuditDigest::outline($violation),
+        );
+    }
+
+    #[Test]
+    public function a_driver_level_without_a_sqlstate_keeps_its_code_alone(): void
+    {
+        self::assertSame(
+            'Doctrine\\DBAL\\Driver\\AbstractException@anonymous (code 3)',
+            AuditDigest::outline(new class('no state', null, 3) extends AbstractException {}),
+        );
+    }
+
+    #[Test]
+    public function keeps_the_message_of_the_levels_its_predicate_picks(): void
+    {
+        $outline = AuditDigest::outline(
+            new LogicException('the engine refused', 0, new RuntimeException('quotes FR76 3000')),
+            static fn (Throwable $level): bool => $level instanceof LogicException,
+        );
+
+        self::assertSame("LogicException: the engine refused\ncaused by: RuntimeException (code 0)", $outline);
+    }
+
+    #[Test]
+    #[Group('adversarial')]
+    public function an_outline_is_as_persist_safe_as_a_digest(): void
+    {
+        // a kept message still carries controls, invalid bytes and length; an anonymous class still
+        // carries its NUL and path
+        $keepAll = static fn (Throwable $level): bool => true;
+
+        $kept = AuditDigest::outline(new RuntimeException("red\x1b[31m\xFF".str_repeat('x', AuditDigest::MAX_ERROR_CHARS)), $keepAll);
+        self::assertStringNotContainsString("\x1b", $kept);
+        self::assertTrue(mb_check_encoding($kept, 'UTF-8'));
+        self::assertSame(AuditDigest::MAX_ERROR_CHARS, mb_strlen($kept));
+        self::assertStringEndsWith('…', $kept);
+
+        $anonymous = AuditDigest::outline(new class('boom') extends RuntimeException {});
+        self::assertSame('RuntimeException@anonymous (code 0)', $anonymous);
+    }
+
+    #[Test]
+    public function an_outline_walks_the_same_depth_as_a_digest(): void
+    {
+        $current = new RuntimeException('tail', AuditDigest::MAX_CAUSE_DEPTH);
+        for ($i = AuditDigest::MAX_CAUSE_DEPTH - 1; $i >= 0; $i--) {
+            $current = new RuntimeException('level', $i, $current);
+        }
+
+        $outline = AuditDigest::outline($current);
+
+        self::assertSame(AuditDigest::MAX_CAUSE_DEPTH - 1, substr_count($outline, AuditDigest::CAUSE_SEPARATOR));
+        self::assertStringEndsWith('(code '.(AuditDigest::MAX_CAUSE_DEPTH - 1).')', $outline);
     }
 }
